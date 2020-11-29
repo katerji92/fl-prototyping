@@ -18,8 +18,10 @@ tf.compat.v1.enable_eager_execution()
 # Constants
 NUMBER_OF_CLIENTS = 20
 BATCH_SIZE = 32
-NUMBER_OF_EPOCHS = 25
+NUMBER_OF_EPOCHS = 30
 NUMBER_OF_CLUSTERS = 10
+SHUFFLE_BUFFER = 100
+PREFETCH_BUFFER = 10
 
 # Get the dataset
 emnist_train, emnist_test = tff.simulation.datasets.emnist.load_data()
@@ -27,10 +29,19 @@ emnist_train, emnist_test = tff.simulation.datasets.emnist.load_data()
 
 def preprocess(dataset):
   def batch_format_fn(element):
+    return collections.OrderedDict(
+        x=tf.reshape(element['pixels'], [-1, 784]),
+        y=tf.reshape(element['label'], [-1, 1]))
+        
+  return dataset.repeat(NUMBER_OF_EPOCHS).shuffle(SHUFFLE_BUFFER).batch(
+      BATCH_SIZE).map(batch_format_fn).prefetch(PREFETCH_BUFFER)
+
+def preprocess_val(dataset):
+  def batch_format_fn(element):
     return (tf.reshape(element['pixels'],[-1,784]),
             tf.reshape(element['label'],[-1,1]))
-  # return dataset#.batch(BATCH_SIZE).map(batch_format_fn)
-  return dataset.map(batch_format_fn)
+  return dataset.batch(BATCH_SIZE).map(batch_format_fn)
+
 def get_dataset_for_client(client_id, dataset):
   return preprocess(dataset.create_tf_dataset_for_client(client_id))
 
@@ -44,13 +55,13 @@ device_ids = device_ids[:NUMBER_OF_CLIENTS]
 train_device_datasets = [get_dataset_for_client(device_id, emnist_train) for device_id in device_ids]
 test_device_datasets = [get_dataset_for_client(device_id, emnist_test) for device_id in device_ids]
 central_emnist_test = emnist_test.create_tf_dataset_from_all_clients().take(1000)
-central_emnist_test = preprocess(central_emnist_test)
+central_emnist_test = preprocess_val(central_emnist_test)
 
 # Define the model
 def keras_model():
   return tf.keras.models.Sequential([
     tf.keras.layers.Input(shape=(784,)),
-    tf.keras.layers.Dense(50, activation='relu'),
+    tf.keras.layers.Dense(50),
     tf.keras.layers.Dense(10, kernel_initializer='zeros'),
     tf.keras.layers.Softmax(),
   ])
