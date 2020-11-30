@@ -16,12 +16,13 @@ nest_asyncio.apply()
 tf.compat.v1.enable_eager_execution()
 
 # Constants
-NUMBER_OF_CLIENTS = 25
+NUMBER_OF_CLIENTS = 10
 BATCH_SIZE = 20
-NUMBER_OF_EPOCHS = 25
-NUMBER_OF_CLUSTERS = 10
+NUMBER_OF_EPOCHS = 20
+NUMBER_OF_CLUSTERS = 5
 SHUFFLE_BUFFER = 100
 PREFETCH_BUFFER = 10
+USE_KMEANS = False
 
 # Get the dataset
 emnist_train, emnist_test = tff.simulation.datasets.emnist.load_data()
@@ -61,11 +62,6 @@ central_emnist_test = preprocess_val(central_emnist_test)
 def keras_model():
   return tf.keras.models.Sequential([
     tf.keras.layers.Input(shape=(784,)),
-    tf.keras.layers.Dense(100, activation='relu'),
-    tf.keras.layers.Dense(100, activation='relu'),
-    tf.keras.layers.Dense(100, activation='relu'),
-    tf.keras.layers.Dense(100, activation='relu'),
-    tf.keras.layers.Dense(100, activation='relu'),
     tf.keras.layers.Dense(10, kernel_initializer='zeros'),
     tf.keras.layers.Softmax(),
   ])
@@ -196,19 +192,62 @@ kmeans = KMeans(n_clusters=number_of_clusters)
 kmeans.fit(client_weights_flat)
 clusterd_weights_indexes = kmeans.predict(client_weights_flat)
 
-# Calculate the each of the cluster's weights
-cluster_device_map = {}
-cluster_device_weight_map = {}
-cluster_device_datasets = {}
-for i in range(0, len(clusterd_weights_indexes)):
-  cluster_key = str(clusterd_weights_indexes[i])
-  if cluster_key not in cluster_device_map:
-    cluster_device_map[cluster_key] = []
-    cluster_device_weight_map[cluster_key] = []
-    cluster_device_datasets[cluster_key] = []
-  cluster_device_map[cluster_key].append(i)
-  cluster_device_weight_map[cluster_key].append(updated_client_weights[i])
-  cluster_device_datasets[cluster_key].append(train_device_datasets[int(cluster_key)])
+if not USE_KMEANS:
+  # Dynamic clustering
+  THRESHOLD = 0.1
+  client_distances = np.ndarray((NUMBER_OF_CLIENTS, NUMBER_OF_CLIENTS))
+  for i in range(0, NUMBER_OF_CLIENTS):
+    for j in range(0, NUMBER_OF_CLIENTS):
+      client_distances[i, j] = np.linalg.norm(client_weights_flat[i] - client_weights_flat[j])
+  THRESHOLD = np.average(client_distances)
+
+  current_cluster_index = 0
+  device_cluster_map = []
+  clustered_devices = set()
+  for i in range(0, NUMBER_OF_CLIENTS):
+    # if i in clustered_devices:
+    #   continue
+    if len(device_cluster_map) <= current_cluster_index:
+      device_cluster_map.append([i])
+    clustered_devices.add(i)
+    for j in range(0, NUMBER_OF_CLIENTS):
+      if(i == j):
+        continue
+      else:
+        if(client_distances[i][j] < THRESHOLD):
+          device_cluster_map[current_cluster_index].append(j)
+          clustered_devices.add(j)
+    current_cluster_index = current_cluster_index + 1
+  NUMBER_OF_CLUSTERS = current_cluster_index - 1
+
+  # Dynamic clustering
+  cluster_device_map = {}
+  cluster_device_weight_map = {}
+  cluster_device_datasets = {}
+  for cluster_index in range(0, len(device_cluster_map)):
+    cluster_key = str(cluster_index)
+    cluster_device_map[cluster_key] = device_cluster_map[cluster_index]
+    if cluster_key not in cluster_device_weight_map:
+      cluster_device_weight_map[cluster_key] = []
+      cluster_device_datasets[cluster_key] = []
+    for device_index in cluster_device_map[cluster_key]:
+      cluster_device_weight_map[cluster_key].append(updated_client_weights[device_index])
+      cluster_device_datasets[cluster_key].append(train_device_datasets[device_index])
+else:
+  # Calculate the each of the cluster's weights
+  cluster_device_map = {}
+  cluster_device_weight_map = {}
+  cluster_device_datasets = {}
+  for i in range(0, len(clusterd_weights_indexes)):
+    cluster_key = str(clusterd_weights_indexes[i])
+    if cluster_key not in cluster_device_map:
+      cluster_device_map[cluster_key] = []
+      cluster_device_weight_map[cluster_key] = []
+      cluster_device_datasets[cluster_key] = []
+    cluster_device_map[cluster_key].append(i)
+    cluster_device_weight_map[cluster_key].append(updated_client_weights[i])
+    cluster_device_datasets[cluster_key].append(train_device_datasets[i])
+
 
 # Calculate the averages of the clusters
 cluster_device_average_weights = {}
