@@ -16,9 +16,9 @@ nest_asyncio.apply()
 tf.compat.v1.enable_eager_execution()
 
 # Constants
-NUMBER_OF_CLIENTS = 20
-BATCH_SIZE = 32
-NUMBER_OF_EPOCHS = 30
+NUMBER_OF_CLIENTS = 25
+BATCH_SIZE = 20
+NUMBER_OF_EPOCHS = 25
 NUMBER_OF_CLUSTERS = 10
 SHUFFLE_BUFFER = 100
 PREFETCH_BUFFER = 10
@@ -32,7 +32,7 @@ def preprocess(dataset):
     return collections.OrderedDict(
         x=tf.reshape(element['pixels'], [-1, 784]),
         y=tf.reshape(element['label'], [-1, 1]))
-        
+
   return dataset.repeat(NUMBER_OF_EPOCHS).shuffle(SHUFFLE_BUFFER).batch(
       BATCH_SIZE).map(batch_format_fn).prefetch(PREFETCH_BUFFER)
 
@@ -61,7 +61,11 @@ central_emnist_test = preprocess_val(central_emnist_test)
 def keras_model():
   return tf.keras.models.Sequential([
     tf.keras.layers.Input(shape=(784,)),
-    tf.keras.layers.Dense(50),
+    tf.keras.layers.Dense(100, activation='relu'),
+    tf.keras.layers.Dense(100, activation='relu'),
+    tf.keras.layers.Dense(100, activation='relu'),
+    tf.keras.layers.Dense(100, activation='relu'),
+    tf.keras.layers.Dense(100, activation='relu'),
     tf.keras.layers.Dense(10, kernel_initializer='zeros'),
     tf.keras.layers.Softmax(),
   ])
@@ -122,7 +126,7 @@ def client_update(model, dataset, server_weights, client_optimizer):
 @tff.tf_computation(tf_dataset_type, model_weights_type)
 def client_update_fn(tf_dataset, server_weights):
   tff_model = wrap_model_with_tff(keras_model(), input_spec)
-  client_optimizer = tf.keras.optimizers.SGD(learning_rate=0.01)
+  client_optimizer = tf.keras.optimizers.Adam()
   return client_update(tff_model, tf_dataset, server_weights, client_optimizer)
 
 federated_server_type = tff.FederatedType(model_weights_type, tff.SERVER)
@@ -165,14 +169,14 @@ federated_algorithm = tff.templates.IterativeProcess(
 )
 
 # Phase 1
-def evaluate(server_state):
+def evaluate(server_state, dataset = central_emnist_test):
   model = keras_model()
   model.compile(
       loss = tf.keras.losses.SparseCategoricalCrossentropy(),
       metrics = [tf.keras.metrics.SparseCategoricalAccuracy()]
   )
   model.set_weights(server_state)
-  return model.evaluate(central_emnist_test)
+  return model.evaluate(dataset)
 
 # Train as a traditional FL model
 server_state = federated_algorithm.initialize()
@@ -252,9 +256,18 @@ for cluster_key in cluster_weights_after_training.keys():
 cluster_weights_average = cluster_weights_sums / len(list(cluster_device_map.keys()))
 cluster_weights_weighted_average = cluster_weights_sums_weighted / len(list(cluster_device_map.keys()))
 
-print("Phase 1 eval")
-evaluate(updated_server_state_phase_1)
-print("Phase 3 avg eval")
-evaluate(cluster_weights_average)
-print("Phase 3 acc combination avg eval")
-evaluate(cluster_weights_weighted_average)
+results = {
+  "Phase 1 eval": evaluate(updated_server_state_phase_1),
+  "Phase 3 avg eval": evaluate(cluster_weights_average),
+  "Phase 3 acc combination avg eval": evaluate(cluster_weights_weighted_average),
+}
+
+for cluster_key in cluster_device_map:
+  for device_id in cluster_device_map[cluster_key]:
+    results[f"Cluster {cluster_key} with device {device_id}:"] = evaluate((
+        cluster_weights_after_training[cluster_key] + cluster_weights_weighted_average) / 2, 
+        dataset = preprocess_val(emnist_test.create_tf_dataset_for_client(device_ids[device_id])
+      ))
+
+for result in results:
+  print(f"{result}: {results[result]}")
